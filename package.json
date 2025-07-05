@@ -1,0 +1,33 @@
+{
+  "name": "walrus-blob-publisher",
+  "version": "1.0.0",
+  "description": "A TypeScript project to publish blobs to Walrus testnet",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "clean": "rm -rf dist",
+    "test-seal": "ts-node src/test-seal.ts"
+  },
+  "keywords": [
+    "walrus",
+    "sui",
+    "blob",
+    "storage"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@mysten/seal": "^0.4.15",
+    "@mysten/sui": "latest",
+    "@mysten/walrus": "latest",
+    "@mysten/walrus-wasm": "latest",
+    "dotenv": "^17.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.7.0"
+  }
+}
