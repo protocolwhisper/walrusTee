@@ -35,11 +35,12 @@ async fn main() {
             println!("Rust Tee Compiler from Cannes");
             "Rust Compiler API is running"
         }))
-        .route("/run/:user_id/:project_id", post(run_project))
+        .route("/run/{user_id}/{project_id}", post(run_project))
         .layer(cors);
     
-    let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Server started on port 3000");
+    let port = env::var("PORT").unwrap_or_else(|_| "3001".to_string());
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+    println!("Server started on port {}", port);
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -67,15 +68,22 @@ pub async fn run_project(
     mut multipart: Multipart,
 ) -> Result<Response<Body>, (StatusCode, String)> {
     
-    let project_dir = format!("/app/projects/{}/{}", user_id, project_id);
+    println!("=== run_project called for user: {}, project: {} ===", user_id, project_id);
+    
+    let project_dir = format!("./projects/{}/{}", user_id, project_id);
+    println!("Project directory: {}", project_dir);
     
     // Create the project directory and src subdirectory
+    println!("Creating project directory...");
     fs::create_dir_all(format!("{}/src", project_dir))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create project directory {}: {}", project_dir, e)))?;
+    println!("Project directory created successfully");
     
     // Track if we received a tar file
     let mut has_tar_file = false;
+    let mut args = Vec::new();
     
+    println!("Starting to process multipart upload...");
     // This is commonly used for file upload, reference: https://docs.rs/axum/0.8.1/axum/extract/struct.Multipart.html
     while let Some(field) = multipart.next_field().await.map_err(|e| 
         (StatusCode::BAD_REQUEST, format!("Failed to process uploaded files: {}", e))
@@ -84,23 +92,38 @@ pub async fn run_project(
             (StatusCode::BAD_REQUEST, "Missing field name".to_string())
         )?.to_string();
         
-        let file_data = field.bytes().await.map_err(|e| 
-            (StatusCode::BAD_REQUEST, format!("Failed to read field data: {}", e))
-        )?;
+        println!("Processing field: {}", file_name);
         
         if file_name == "tar_file" {
+            let file_data = field.bytes().await.map_err(|e| 
+                (StatusCode::BAD_REQUEST, format!("Failed to read field data: {}", e))
+            )?;
+            
+            println!("Field data size: {} bytes", file_data.len());
+            
             // Save the tar file
             let tar_path = format!("{}/project.tar.gz", project_dir);
+            println!("Saving tar file to: {}", tar_path);
             tokio::fs::write(&tar_path, &file_data)
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write tar file: {}", e)))?;
             has_tar_file = true;
+            println!("Tar file saved successfully");
+        } else if file_name == "args" {
+            let args_data = field.text().await.map_err(|e| 
+                (StatusCode::BAD_REQUEST, format!("Failed to read args data: {}", e))
+            )?;
+            
+            println!("Args received: {}", args_data);
+            args = args_data.split_whitespace().map(|s| s.to_string()).collect();
         } else {
+            println!("Unknown field: {}", file_name);
             return Err((StatusCode::BAD_REQUEST, format!("Unknown field: {}", file_name)));
         }
     }
     
     if !has_tar_file {
+        println!("No tar file received!");
         return Err((StatusCode::BAD_REQUEST, "Missing tar file".to_string()));
     }
     
@@ -108,6 +131,7 @@ pub async fn run_project(
     
     // Decompress the tar file
     let tar_path = format!("{}/project.tar.gz", project_dir);
+    println!("Decompressing tar file: {}", tar_path);
     let decompress_result = decompress_tar(&tar_path, &project_dir).await;
     
     match decompress_result {
@@ -115,46 +139,71 @@ pub async fn run_project(
             println!("Successfully decompressed tar file");
         },
         Err(e) => {
+            println!("Failed to decompress tar file: {}", e);
             return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to decompress tar file: {}", e)));
         }
     }
     
     // After decompression, ensure proper file structure
+    println!("Ensuring project structure...");
     ensure_project_structure(&project_dir).await?;
+    println!("Project structure ensured");
     
     // Verify that Cargo.toml and src/main.rs exist after decompression
     let cargo_toml_path = format!("{}/Cargo.toml", project_dir);
     let main_rs_path = format!("{}/src/main.rs", project_dir);
     
     if !StdPath::new(&cargo_toml_path).exists() {
+        println!("Missing Cargo.toml file after decompression");
         return Err((StatusCode::BAD_REQUEST, "Missing Cargo.toml file after decompression".to_string()));
     }
     
     if !StdPath::new(&main_rs_path).exists() {
+        println!("Missing src/main.rs file after decompression");
         return Err((StatusCode::BAD_REQUEST, "Missing src/main.rs file after decompression".to_string()));
     }
     
+    println!("All required files found, preparing to run project");
+    
     // Prepare the command to run the project
-    let mut command = TokioCommand::new("/app/runner.sh");
+    let mut command = TokioCommand::new("./runner.sh");
     command.arg("run").arg(&project_dir);
     
+    // Add arguments if provided
+    for arg in &args {
+        command.arg(arg);
+    }
+    
+    command.current_dir("."); // Set working directory to current directory
+    
+    println!("Executing command: ./runner.sh run {} {} from directory: {:?}", 
+             project_dir, 
+             args.join(" "), 
+             std::env::current_dir().unwrap());
     let output = command.output().await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to execute project: {}", e)))?;
-    
+
     if output.status.success() {
         let binary_output = String::from_utf8_lossy(&output.stdout).to_string();
+        println!("Project executed successfully");
+        println!("Raw output: {}", binary_output);
+        
+        // Extract just the result (should be just the number now)
+        let result = binary_output.trim().to_string();
+        println!("Result: {}", result);
         
         Ok(Response::builder()
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(serde_json::to_string(&ExecutionResponse {
                 status: "success".to_string(),
-                output: binary_output,
+                output: result,
                 quote: String::new(),
             }).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize response: {}", e)))?))
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to build response: {}", e)))?)
     } else {
         let stderr_output = String::from_utf8_lossy(&output.stderr).to_string();
         let exit_code = output.status.code().unwrap_or(-1);
+        println!("Project execution failed with exit code: {}", exit_code);
         
         if exit_code == 101 || stderr_output.contains("panicked at") {
             Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Panic: {}", stderr_output)))

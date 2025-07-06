@@ -1,0 +1,1 @@
+/Users/protocolwhisper/Documents/Working\ Dir/EthCannes/rustcompiler/projects/user123/fibonacci-project/target/release/fibonacci-prime: /Users/protocolwhisper/Documents/Working\ Dir/EthCannes/rustcompiler/projects/user123/fibonacci-project/src/main.rs
