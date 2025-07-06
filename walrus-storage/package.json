@@ -8,7 +8,13 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "clean": "rm -rf dist",
-    "test-seal": "ts-node src/test-seal.ts"
+    "test-seal": "ts-node src/test-seal.ts",
+    "store": "ts-node src/simple-storage.ts store",
+    "retrieve": "ts-node src/simple-storage.ts retrieve",
+    "list": "ts-node src/simple-storage.ts list",
+    "test-storage": "ts-node src/test-storage.ts",
+    "store-file": "ts-node src/simple-storage.ts store-file",
+    "retrieve-file": "ts-node src/simple-storage.ts retrieve-file"
   },
   "keywords": [
     "walrus",
