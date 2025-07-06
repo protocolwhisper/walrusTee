@@ -1,4 +1,4 @@
-# EthCannes - Rust Compiler with Walrus Storage
+# EthCannes - Lambda Rust Compiler with Walrus Storage
 
 ![System Architecture](https://i.ibb.co/QFZzSFrq/ZKtee-landscape2.png)
 
