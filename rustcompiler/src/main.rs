@@ -18,6 +18,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::{CorsLayer, Any};
 use dotenv::dotenv;
 use crate::types::*;
+use std::path::Path as StdPath;
 
 #[tokio::main]
 async fn main() {
@@ -72,9 +73,8 @@ pub async fn run_project(
     fs::create_dir_all(format!("{}/src", project_dir))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create project directory {}: {}", project_dir, e)))?;
     
-    // Track required files
-    let mut has_cargo_toml = false;
-    let mut has_main_rs = false;
+    // Track if we received a tar file
+    let mut has_tar_file = false;
     
     // This is commonly used for file upload, reference: https://docs.rs/axum/0.8.1/axum/extract/struct.Multipart.html
     while let Some(field) = multipart.next_field().await.map_err(|e| 
@@ -88,52 +88,53 @@ pub async fn run_project(
             (StatusCode::BAD_REQUEST, format!("Failed to read field data: {}", e))
         )?;
         
-        match file_name.as_str() { 
-            "cargo_toml" => {
-                tokio::fs::write(format!("{}/Cargo.toml", project_dir), &file_data)
-                    .await
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write Cargo.toml: {}", e)))?;
-                has_cargo_toml = true;
-            },
-            "main_rs" => {
-                tokio::fs::write(format!("{}/src/main.rs", project_dir), &file_data)
-                    .await
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write main.rs: {}", e)))?;
-                has_main_rs = true;
-            },
-            "env_file" => {
-                tokio::fs::write(format!("{}/project.env", project_dir), &file_data)
-                    .await
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write environment file: {}", e)))?;
-            },
-            _ => {
-                // Handle multiple files
-                if file_name.ends_with(".rs") {
-                    let filename = file_name.split('/').last().unwrap_or(&file_name);
-                    tokio::fs::write(format!("{}/src/{}", project_dir, filename), &file_data)
-                        .await
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write {}: {}", filename, e)))?;
-                } else {
-                    let file_name = file_name.split('/').last().unwrap_or(&file_name);
-                    tokio::fs::write(format!("{}/src/{}", project_dir, file_name), &file_data)
-                        .await
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write {}: {}", file_name, e)))?;
-                }
-            }
+        if file_name == "tar_file" {
+            // Save the tar file
+            let tar_path = format!("{}/project.tar.gz", project_dir);
+            tokio::fs::write(&tar_path, &file_data)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write tar file: {}", e)))?;
+            has_tar_file = true;
+        } else {
+            return Err((StatusCode::BAD_REQUEST, format!("Unknown field: {}", file_name)));
         }
     }
     
-    if !has_cargo_toml {
-        return Err((StatusCode::BAD_REQUEST, "Missing Cargo.toml file".to_string()));
+    if !has_tar_file {
+        return Err((StatusCode::BAD_REQUEST, "Missing tar file".to_string()));
     }
     
-    if !has_main_rs {
-        return Err((StatusCode::BAD_REQUEST, "Missing src/main.rs file".to_string()));
+    println!("About to decompress and run project at: {}", project_dir);
+    
+    // Decompress the tar file
+    let tar_path = format!("{}/project.tar.gz", project_dir);
+    let decompress_result = decompress_tar(&tar_path, &project_dir).await;
+    
+    match decompress_result {
+        Ok(_) => {
+            println!("Successfully decompressed tar file");
+        },
+        Err(e) => {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to decompress tar file: {}", e)));
+        }
     }
     
-    println!("About to run project at: {}", project_dir);
+    // After decompression, ensure proper file structure
+    ensure_project_structure(&project_dir).await?;
     
-    // Prepare the command
+    // Verify that Cargo.toml and src/main.rs exist after decompression
+    let cargo_toml_path = format!("{}/Cargo.toml", project_dir);
+    let main_rs_path = format!("{}/src/main.rs", project_dir);
+    
+    if !StdPath::new(&cargo_toml_path).exists() {
+        return Err((StatusCode::BAD_REQUEST, "Missing Cargo.toml file after decompression".to_string()));
+    }
+    
+    if !StdPath::new(&main_rs_path).exists() {
+        return Err((StatusCode::BAD_REQUEST, "Missing src/main.rs file after decompression".to_string()));
+    }
+    
+    // Prepare the command to run the project
     let mut command = TokioCommand::new("/app/runner.sh");
     command.arg("run").arg(&project_dir);
     
@@ -161,4 +162,56 @@ pub async fn run_project(
             Err((StatusCode::BAD_REQUEST, format!("Execution error: {}", stderr_output)))
         }
     }
+}
+
+async fn decompress_tar(tar_path: &str, extract_dir: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Use tar command to decompress
+    let output = TokioCommand::new("tar")
+        .arg("-xzf")
+        .arg(tar_path)
+        .arg("-C")
+        .arg(extract_dir)
+        .output()
+        .await?;
+    
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Tar decompression failed: {}", error).into());
+    }
+    
+    Ok(())
+}
+
+async fn ensure_project_structure(project_dir: &str) -> Result<(), (StatusCode, String)> {
+    // Ensure src directory exists
+    let src_dir = format!("{}/src", project_dir);
+    fs::create_dir_all(&src_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create src directory: {}", e)))?;
+    
+    // Move any .rs files from root to src directory
+    let entries = fs::read_dir(project_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read project directory: {}", e)))?;
+    
+    for entry in entries {
+        let entry = entry.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read directory entry: {}", e)))?;
+        let path = entry.path();
+        
+        if path.is_file() {
+            if let Some(extension) = path.extension() {
+                if extension == "rs" {
+                    let filename = path.file_name().unwrap().to_string_lossy();
+                    let new_path = format!("{}/src/{}", project_dir, filename);
+                    // Clone the path for fs::rename
+                    let path_clone = path.clone();
+                    if !path_clone.to_string_lossy().contains("/src/") {
+                        fs::rename(path_clone, &new_path)
+                            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to move {} to src directory: {}", filename, e)))?;
+                        println!("Moved {} to src directory", filename);
+                    }
+                }
+            }
+        }
+    }
+   
+    Ok(())
 } 
