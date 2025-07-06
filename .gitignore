@@ -1,3 +1,8 @@
-.env
-src/move/build
+.envsrc/move/build
 node_modules
+rustcompiler/target
+rustcompiler/Cargo.lock
+fibonacci-prime/target
+fibonacci-prime/Cargo.lock
+walrus-storage/target
+walrus-storage/Cargo.lock   
