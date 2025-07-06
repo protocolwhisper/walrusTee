@@ -43,6 +43,25 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Balance check endpoint
+app.get('/balance', async (req, res) => {
+  try {
+    const balance = await storage.getBalance();
+    res.json({
+      success: true,
+      address: storage.getAddress(),
+      balance: balance,
+      message: 'Balance retrieved successfully'
+    });
+  } catch (error) {
+    console.error('Balance error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get balance',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 // Upload tar file endpoint
 app.post('/upload', upload.single('tarFile'), async (req, res) => {
   try {
@@ -173,6 +192,7 @@ app.listen(port, () => {
   console.log(`Walrus Storage API running on port ${port}`);
   console.log('Available endpoints:');
   console.log('  GET  /health - Health check');
+  console.log('  GET  /balance - Balance check');
   console.log('  POST /upload - Upload tar file');
   console.log('  GET  /retrieve/:blobId - Download file');
   console.log('  GET  /info/:blobId - Get file info');

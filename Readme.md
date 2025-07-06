@@ -1,6 +1,6 @@
 # EthCannes - Rust Compiler with Walrus Storage
 
-![System Architecture](https://ibb.co/ZRWFGfDg)
+![System Architecture](https://i.ibb.co/ZRWFGfDg/ZKtee-landscape-1.png)
 
 ## Overview
 

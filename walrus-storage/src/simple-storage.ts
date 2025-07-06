@@ -93,6 +93,21 @@ class SimpleStorage {
     return this.keypair.getPublicKey().toSuiAddress();
   }
 
+  async getBalance(): Promise<string> {
+    try {
+      const address = this.getAddress();
+      const balance = await this.suiClient.getBalance({
+        owner: address,
+        coinType: '0x2::sui::SUI' // For WAL tokens, you might need to use the specific coin type
+      });
+      
+      return balance.totalBalance;
+    } catch (error) {
+      console.error('Error getting balance:', error);
+      throw error;
+    }
+  }
+
   async storeFile(filePath: string, description?: string, tags?: string[]): Promise<string> {
     const fileBuffer = fs.readFileSync(filePath);
     const fileName = path.basename(filePath);
