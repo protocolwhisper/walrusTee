@@ -19,6 +19,18 @@ use tower_http::cors::{CorsLayer, Any};
 use dotenv::dotenv;
 use crate::types::*;
 use std::path::Path as StdPath;
+use std::sync::Arc;
+use chrono;
+use lazy_static::lazy_static;
+
+
+// Global Walrus client
+lazy_static::lazy_static! {
+    static ref WALRUS_CLIENT: Arc<WalrusClient> = {
+        let base_url = env::var("WALRUS_API_URL").unwrap_or_else(|_| "http://localhost:3002".to_string());
+        Arc::new(WalrusClient::new(base_url))
+    };
+}
 
 #[tokio::main]
 async fn main() {
@@ -36,6 +48,9 @@ async fn main() {
             "Rust Compiler API is running"
         }))
         .route("/run/{user_id}/{project_id}", post(run_project))
+        .route("/walrus/upload", post(upload_to_walrus))
+        .route("/walrus/retrieve/{blob_id}", get(retrieve_from_walrus))
+        .route("/walrus/info/{blob_id}", get(get_walrus_info))
         .layer(cors);
     
     let port = env::var("PORT").unwrap_or_else(|_| "3001".to_string());
@@ -263,4 +278,137 @@ async fn ensure_project_structure(project_dir: &str) -> Result<(), (StatusCode, 
     }
    
     Ok(())
+}
+
+// Walrus Storage API handlers
+
+pub async fn upload_to_walrus(
+    mut multipart: Multipart,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    println!("=== upload_to_walrus called ===");
+    
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut file_name = String::from("uploaded-file.tar.gz");
+    let mut description = String::from("Uploaded from Rust Compiler");
+    let mut tags = vec!["rust-compiler".to_string(), "upload".to_string()];
+    
+    while let Some(field) = multipart.next_field().await.map_err(|e| 
+        (StatusCode::BAD_REQUEST, format!("Failed to process multipart: {}", e))
+    )? {
+        let field_name = field.name().ok_or_else(|| 
+            (StatusCode::BAD_REQUEST, "Missing field name".to_string())
+        )?.to_string();
+        
+        println!("Processing field: {}", field_name);
+        
+        match field_name.as_str() {
+            "file" => {
+                let bytes = field.bytes().await.map_err(|e| 
+                    (StatusCode::BAD_REQUEST, format!("Failed to read file data: {}", e))
+                )?;
+                
+                file_bytes = Some(bytes.to_vec());
+                println!("File received: {} bytes", bytes.len());
+            },
+            "fileName" => {
+                file_name = field.text().await.map_err(|e| 
+                    (StatusCode::BAD_REQUEST, format!("Failed to read filename: {}", e))
+                )?;
+            },
+            "description" => {
+                description = field.text().await.map_err(|e| 
+                    (StatusCode::BAD_REQUEST, format!("Failed to read description: {}", e))
+                )?;
+            },
+            "tags" => {
+                let tags_str = field.text().await.map_err(|e| 
+                    (StatusCode::BAD_REQUEST, format!("Failed to read tags: {}", e))
+                )?;
+                tags = tags_str.split(',').map(|s| s.trim().to_string()).collect();
+            },
+            _ => {
+                println!("Unknown field: {}", field_name);
+            }
+        }
+    }
+    
+    let file_bytes = file_bytes.ok_or_else(|| 
+        (StatusCode::BAD_REQUEST, "No file provided".to_string())
+    )?;
+    
+    println!("Uploading file: {} ({} bytes) to Walrus API on port 3002", file_name, file_bytes.len());
+    
+    // Use the WalrusClient from types.rs
+    match WALRUS_CLIENT.upload_file(&file_bytes, &file_name, &description, &tags).await {
+        Ok(response) => {
+            println!("Upload successful! Blob ID: {}", response.blobId);
+            Ok(Response::builder()
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&response)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize response: {}", e)))?))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to build response: {}", e)))?)
+        },
+        Err(e) => {
+            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Upload failed: {}", e)))
+        }
+    }
+}
+
+pub async fn retrieve_from_walrus(
+    Path(blob_id): Path<String>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    println!("=== retrieve_from_walrus called for blob: {} ===", blob_id);
+    
+    let output_path = format!("downloads/retrieved_{}.tar.gz", blob_id);
+    
+    // Ensure downloads directory exists
+    tokio::fs::create_dir_all("downloads")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create downloads directory: {}", e)))?;
+    
+    println!("Retrieving file from Walrus API on port 3002 for blob: {}", blob_id);
+    
+    // Use the WalrusClient from types.rs
+    match WALRUS_CLIENT.retrieve_file(&blob_id, &output_path).await {
+        Ok(_) => {
+            // Read the file and send it as response
+            let file_data = tokio::fs::read(&output_path)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read retrieved file: {}", e)))?;
+            
+            // Clean up the file
+            let _ = tokio::fs::remove_file(&output_path).await;
+            
+            Ok(Response::builder()
+                .header(header::CONTENT_TYPE, "application/gzip")
+                .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"retrieved_{}.tar.gz\"", blob_id))
+                .body(Body::from(file_data))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to build response: {}", e)))?)
+        },
+        Err(e) => {
+            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Retrieve failed: {}", e)))
+        }
+    }
+}
+
+pub async fn get_walrus_info(
+    Path(blob_id): Path<String>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    println!("=== get_walrus_info called for blob: {} ===", blob_id);
+    
+    println!("Getting file info from Walrus API on port 3002 for blob: {}", blob_id);
+    
+    // Use the WalrusClient from types.rs
+    match WALRUS_CLIENT.get_file_info(&blob_id).await {
+        Ok(response) => {
+            Ok(Response::builder()
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&response)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize response: {}", e)))?))
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to build response: {}", e)))?)
+        },
+        Err(e) => {
+            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Get info failed: {}", e)))
+        }
+    }
 } 

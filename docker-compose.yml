@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  rustcompiler-walrus:
+    image: docker.io/eldiosito/cannes:latest
+    ports:
+      - "3001:3001"  # Rust Compiler API
+      - "3002:3002"  # Walrus Storage API
+    environment:
+      - RUST_LOG=info
+      - CORS_ALLOWED_ORIGIN=*
+      - WALRUS_API_URL=http://localhost:3002
+      - RUST_PORT=3001
+      - WALRUS_PORT=3002
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

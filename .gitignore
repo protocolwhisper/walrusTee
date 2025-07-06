@@ -6,3 +6,7 @@ fibonacci-prime/target
 fibonacci-prime/Cargo.lock
 walrus-storage/target
 walrus-storage/Cargo.lock   
+walrus-storage/node_modules
+walrus-storage/.env
+
+*.orc
